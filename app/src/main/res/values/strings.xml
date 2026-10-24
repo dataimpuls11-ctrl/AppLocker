@@ -1,0 +1,3 @@
+<resources>
+    <string name="a11y_desc">Detects when a locked app opens so AppLocker can ask for your PIN, and blocks uninstall screens for locked apps.</string>
+</resources>
