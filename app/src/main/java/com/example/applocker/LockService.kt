@@ -26,8 +26,21 @@ class LockService : AccessibilityService() {
             }
         }
 
-        // 2) Ask for PIN when a locked app comes to the front
-        if (pkg in Prefs.lockedApps(this) && !Prefs.isInGrace(this, pkg)) {
+        if (pkg !in Prefs.lockedApps(this)) return
+
+        // 2) Block timer: app cannot be opened at all, no PIN accepted; show live countdown
+        if (Prefs.isBlocking(this)) {
+            startActivity(
+                Intent(this, LockActivity::class.java)
+                    .putExtra("pkg", pkg)
+                    .putExtra("blocked", true)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            )
+            return
+        }
+
+        // 3) Normal mode: ask for PIN unless inside the PIN grace period
+        if (!Prefs.isInGrace(this, pkg)) {
             startActivity(
                 Intent(this, LockActivity::class.java)
                     .putExtra("pkg", pkg)

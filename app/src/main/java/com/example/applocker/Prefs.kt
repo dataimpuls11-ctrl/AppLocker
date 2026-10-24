@@ -45,4 +45,12 @@ object Prefs {
 
     fun isInGrace(c: Context, pkg: String) =
         System.currentTimeMillis() < sp(c).getLong("until_$pkg", 0L)
+
+    // Strict block timer: locked apps cannot be opened at all until this time
+    fun blockUntil(c: Context) = sp(c).getLong("block_until", 0L)
+    fun isBlocking(c: Context) = System.currentTimeMillis() < blockUntil(c)
+    fun startBlock(c: Context, hours: Double) {
+        val until = System.currentTimeMillis() + (hours * 3_600_000L).toLong()
+        sp(c).edit().putLong("block_until", until).apply()
+    }
 }
