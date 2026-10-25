@@ -18,8 +18,9 @@ class LockService : AccessibilityService() {
         val pkg = e.packageName?.toString() ?: return
         if (pkg == packageName) return
 
-        // 1) Block uninstall / app-info / force-stop screens for locked apps and AppLocker itself
-        if (pkg in installers || pkg == "com.android.settings") {
+        // 1) Only WHILE the block timer is running: block uninstall / app-info / force-stop
+        //    screens for locked apps and AppLocker itself. After the timer ends, uninstall is allowed.
+        if (Prefs.isBlocking(this) && (pkg in installers || pkg == "com.android.settings")) {
             if (showsProtectedApp()) {
                 performGlobalAction(GLOBAL_ACTION_HOME)
                 return
