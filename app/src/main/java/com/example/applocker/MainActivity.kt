@@ -112,7 +112,7 @@ class MainActivity : Activity() {
 
         // PIN
         val pin = EditText(this).apply {
-            hint = if (Prefs.hasPin(this@MainActivity)) "New PIN (to change)" else "Set a PIN (4+ digits)"
+            hint = if (Prefs.hasPin(this@MainActivity)) "New PIN (to change)" else "PIN (optional, 4+ digits)"
             inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD
         }
         col.addView(pin)
@@ -277,7 +277,6 @@ class MainActivity : Activity() {
                 compoundDrawablePadding = 24
                 setOnCheckedChangeListener { _, on ->
                     when {
-                        !Prefs.hasPin(this@MainActivity) -> { isChecked = false; toast("Set a PIN first") }
                         !on && Prefs.uninstallProtected(this@MainActivity) -> { isChecked = true; toast("Cannot remove an app while a block is active") }
                         else -> Prefs.setLocked(this@MainActivity, a.packageName, on)
                     }

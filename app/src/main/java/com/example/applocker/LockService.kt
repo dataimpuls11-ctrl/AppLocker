@@ -80,7 +80,7 @@ class LockService : AccessibilityService() {
         if (Prefs.isBlockedNow(this)) { showBlocked(pkg); return }
 
         // Not blocked: ask for PIN only if the option is on, and not inside the PIN grace period
-        if (Prefs.askPin(this) && !Prefs.isInGrace(this, pkg)) {
+        if (Prefs.hasPin(this) && Prefs.askPin(this) && !Prefs.isInGrace(this, pkg)) {
             startActivity(
                 Intent(this, LockActivity::class.java)
                     .putExtra("pkg", pkg)
