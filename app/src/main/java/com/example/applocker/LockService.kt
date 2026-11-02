@@ -11,6 +11,7 @@ class LockService : AccessibilityService() {
 
     private val handler = Handler(Looper.getMainLooper())
     private var lastPkg = ""
+    private var lastCls = ""
     private var ticks = 0
 
     private val installers = setOf(
@@ -18,9 +19,15 @@ class LockService : AccessibilityService() {
         "com.samsung.android.packageinstaller"
     )
 
+    // System screens from where an app can be uninstalled / stopped / switched off
+    private val surfaceHints = listOf(
+        "settings", "packageinstaller", "installer", "vending", "launcher", "home",
+        "safecenter", "securitycenter", "appmanager", "oplus", "coloros", "miui", "samsung.android.app", "systemui"
+    )
+
     // "Uninstall / Force stop / Deactivate / Turn off" in many languages
     private val words = listOf(
-        "uninstall", "force stop", "deactivate", "disable", "clear data", "turn off", "use applocker",
+        "uninstall", "delete app", "remove app", "force stop", "deactivate", "disable", "clear data", "turn off", "use applocker",
         "ان انسٹال", "زبردستی", "غیر فعال", "بند کریں",
         "إلغاء التثبيت", "إيقاف إجباري", "إلغاء التنشيط", "إيقاف",
         "अनइंस्टॉल", "ज़बरदस्ती", "निष्क्रिय", "बंद करें",
@@ -58,20 +65,21 @@ class LockService : AccessibilityService() {
         )
     }
 
+    private fun isSurface(pkg: String) = surfaceHints.any { pkg.contains(it) }
+
     override fun onAccessibilityEvent(e: AccessibilityEvent) {
         if (e.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
         val pkg = e.packageName?.toString() ?: return
         val cls = e.className?.toString()?.lowercase() ?: ""
         if (pkg == packageName) { lastPkg = ""; return }
         lastPkg = pkg
+        lastCls = cls
 
-        if (Prefs.uninstallProtected(this)) {
-            // Uninstall / app-info / device-admin / accessibility screens of protected apps
-            if ((pkg in installers || pkg == "com.android.settings" || pkg.contains("settings")) &&
-                showsProtectedApp(pkg in installers, cls)) {
-                performGlobalAction(GLOBAL_ACTION_HOME)
-                return
-            }
+        // While any app is protected: close every uninstall / app-info / device-admin / accessibility-off screen.
+        // Screens load their text slowly, so check right away and again a little later.
+        if (Prefs.uninstallProtected(this) && isSurface(pkg)) {
+            guard()
+            for (d in longArrayOf(300, 900, 2000)) handler.postDelayed({ guard() }, d)
         }
 
         if (pkg !in Prefs.lockedApps(this)) return
@@ -79,7 +87,7 @@ class LockService : AccessibilityService() {
         // Blocked now (timer or daily window): no PIN, show live countdown
         if (Prefs.isBlockedNow(this, pkg)) { showBlocked(pkg); return }
 
-        // Not blocked: ask for PIN only if the option is on, and not inside the PIN grace period
+        // Not blocked: ask for PIN only if a PIN exists, the option is on, and not inside the PIN grace period
         if (Prefs.hasPin(this) && Prefs.askPin(this) && !Prefs.isInGrace(this, pkg)) {
             startActivity(
                 Intent(this, LockActivity::class.java)
@@ -89,8 +97,16 @@ class LockService : AccessibilityService() {
         }
     }
 
-    private fun showsProtectedApp(isInstaller: Boolean, cls: String): Boolean {
-        val root = rootInActiveWindow ?: return false
+    private fun guard() {
+        if (!Prefs.uninstallProtected(this)) return
+        val root = rootInActiveWindow ?: return
+        val pkg = root.packageName?.toString() ?: return
+        if (pkg == packageName || !isSurface(pkg)) return
+        val isInstaller = pkg in installers || pkg.contains("packageinstaller")
+        if (showsProtectedApp(root, isInstaller, lastCls)) performGlobalAction(GLOBAL_ACTION_HOME)
+    }
+
+    private fun showsProtectedApp(root: AccessibilityNodeInfo, isInstaller: Boolean, cls: String): Boolean {
         val sb = StringBuilder()
         collect(root, sb)
         val t = sb.toString().lowercase()
