@@ -180,12 +180,13 @@ class MainActivity : Activity() {
                         startMin == endMin -> toast("Start and end time cannot be the same")
                         Prefs.lockedApps(this@MainActivity).isEmpty() -> toast("Tick at least one app first")
                         !accessOn() -> toast("Turn on Accessibility first")
-                        !Prefs.timeSynced(this@MainActivity) -> { Prefs.syncNow(this@MainActivity); toast("Connect to the internet once so the real time can be checked, then try again") }
                         else -> AlertDialog.Builder(this@MainActivity)
                             .setTitle("Block ${fmt(startMin)} - ${fmt(endMin)} (${zones[tzIndex].first}) for $d day(s)?")
                             .setMessage("Cannot be cancelled. Uninstall stays blocked for all $d days. You can only add more days later.")
                             .setPositiveButton("Start") { _, _ ->
-                                Prefs.startSchedule(this@MainActivity, startMin, endMin, d, zones[tzIndex].second); show()
+                                Prefs.startSchedule(this@MainActivity, startMin, endMin, d, zones[tzIndex].second)
+                                if (!Prefs.timeSynced(this@MainActivity)) toast("Real time not checked online yet; phone clock is used until the check succeeds")
+                                show()
                             }
                             .setNegativeButton("Cancel", null).show()
                     }

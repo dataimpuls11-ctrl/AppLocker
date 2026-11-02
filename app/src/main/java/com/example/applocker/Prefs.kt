@@ -34,26 +34,31 @@ object Prefs {
         return System.currentTimeMillis() + s.getLong("sync_offset", 0L)
     }
 
-    // Reads the real time from the internet (HTTP Date header). Runs in background.
+    // Reads the real time from the internet (HTTP Date header). Tries several sites. Runs in background.
     fun syncNow(c: Context) {
         val app = c.applicationContext
         Thread {
-            try {
-                val conn = URL("https://www.google.com").openConnection() as HttpURLConnection
-                conn.requestMethod = "HEAD"
-                conn.connectTimeout = 8000
-                conn.readTimeout = 8000
-                val t = conn.date
-                conn.disconnect()
-                if (t > 0) {
-                    sp(app).edit()
-                        .putLong("sync_wall", t)
-                        .putLong("sync_elapsed", SystemClock.elapsedRealtime())
-                        .putLong("sync_offset", t - System.currentTimeMillis())
-                        .putInt("sync_boot", bootCount(app))
-                        .apply()
-                }
-            } catch (e: Exception) { /* offline: keep last sync */ }
+            val sites = listOf("https://www.google.com", "https://www.cloudflare.com", "https://www.microsoft.com", "https://www.wikipedia.org")
+            for (site in sites) {
+                try {
+                    val conn = URL(site).openConnection() as HttpURLConnection
+                    conn.requestMethod = "GET"
+                    conn.connectTimeout = 8000
+                    conn.readTimeout = 8000
+                    conn.connect()
+                    val t = conn.date
+                    conn.disconnect()
+                    if (t > 0) {
+                        sp(app).edit()
+                            .putLong("sync_wall", t)
+                            .putLong("sync_elapsed", SystemClock.elapsedRealtime())
+                            .putLong("sync_offset", t - System.currentTimeMillis())
+                            .putInt("sync_boot", bootCount(app))
+                            .apply()
+                        return@Thread
+                    }
+                } catch (e: Exception) { /* try next site */ }
+            }
         }.start()
     }
 
