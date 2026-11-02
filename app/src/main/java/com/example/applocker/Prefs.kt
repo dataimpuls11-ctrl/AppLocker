@@ -98,32 +98,56 @@ object Prefs {
 
     fun isInGrace(c: Context, pkg: String) = now(c) < sp(c).getLong("until_$pkg", 0L)
 
-    // ---------------- One-off block timer ----------------
-    fun blockUntil(c: Context) = sp(c).getLong("block_until", 0L)
-    fun isBlocking(c: Context) = now(c) < blockUntil(c)
+    // ---------------- Per-app protection ----------------
+    // Every app has its OWN periods:
+    //  - prot_<pkg>  : daily-schedule protection (uninstall blocked + blocked during the daily window)
+    //  - timer_<pkg> : one-off block timer (blocked the whole time)
+    fun protUntil(c: Context, p: String) = sp(c).getLong("prot_$p", 0L)
+    fun isProtected(c: Context, p: String) = now(c) < protUntil(c, p)
+    fun timerUntil(c: Context, p: String) = sp(c).getLong("timer_$p", 0L)
+    fun isTimerBlocked(c: Context, p: String) = now(c) < timerUntil(c, p)
+
+    // App cannot be unticked or uninstalled right now
+    fun isLockedHard(c: Context, p: String) = isProtected(c, p) || isTimerBlocked(c, p)
+    fun hardApps(c: Context): List<String> = lockedApps(c).filter { isLockedHard(c, it) }
+    fun protectedApps(c: Context): List<String> = lockedApps(c).filter { isProtected(c, it) }
+    fun schedActive(c: Context) = lockedApps(c).any { isProtected(c, it) }
+    fun uninstallProtected(c: Context) = hardApps(c).isNotEmpty()
+    fun daysLeft(c: Context, p: String): Long = (protUntil(c, p) - now(c) + 86_399_999L) / 86_400_000L
+
+    // One-off timer for every currently ticked app
     fun startBlock(c: Context, hours: Double) {
-        sp(c).edit().putLong("block_until", now(c) + (hours * 3_600_000L).toLong()).apply()
+        val until = now(c) + (hours * 3_600_000L).toLong()
+        val e = sp(c).edit()
+        for (p in lockedApps(c)) e.putLong("timer_$p", maxOf(until, timerUntil(c, p)))
+        e.apply()
     }
 
-    // ---------------- Daily schedule ----------------
-    fun schedUntil(c: Context) = sp(c).getLong("sched_until", 0L)
-    fun schedActive(c: Context) = now(c) < schedUntil(c)
+    // Daily schedule: only ticked apps that are NOT already protected get a fresh period of `days`.
+    // Already-protected apps keep their own remaining days. The window can only be set when no app is protected.
+    fun startSchedule(c: Context, startMin: Int, endMin: Int, days: Int, tz: String): Int {
+        val fresh = lockedApps(c).filter { !isProtected(c, it) }
+        if (fresh.isEmpty()) return 0
+        val e = sp(c).edit()
+        if (!schedActive(c)) e.putInt("sched_start", startMin).putInt("sched_end", endMin).putString("sched_tz", tz)
+        val until = now(c) + days * 86_400_000L
+        for (p in fresh) e.putLong("prot_$p", until)
+        e.apply()
+        return fresh.size
+    }
+
+    // Days can only be added (to every protected app), never reduced
+    fun addDays(c: Context, days: Int) {
+        if (days <= 0) return
+        val e = sp(c).edit()
+        for (p in protectedApps(c)) e.putLong("prot_$p", protUntil(c, p) + days * 86_400_000L)
+        e.apply()
+    }
+
+    // ---------------- Daily window ----------------
     fun schedStart(c: Context) = sp(c).getInt("sched_start", 21 * 60)
     fun schedEnd(c: Context) = sp(c).getInt("sched_end", 6 * 60)
     fun schedTz(c: Context): String = sp(c).getString("sched_tz", null) ?: TimeZone.getDefault().id
-
-    fun startSchedule(c: Context, startMin: Int, endMin: Int, days: Int, tz: String) {
-        sp(c).edit().putInt("sched_start", startMin).putInt("sched_end", endMin).putString("sched_tz", tz)
-            .putLong("sched_until", now(c) + days * 86_400_000L).apply()
-    }
-
-    // Days can only be added, never reduced
-    fun addDays(c: Context, days: Int) {
-        if (days <= 0) return
-        sp(c).edit().putLong("sched_until", schedUntil(c) + days * 86_400_000L).apply()
-    }
-
-    fun daysLeft(c: Context): Long = (schedUntil(c) - now(c) + 86_399_999L) / 86_400_000L
 
     private fun cal(c: Context): Calendar =
         Calendar.getInstance(TimeZone.getTimeZone(schedTz(c))).also { it.timeInMillis = now(c) }
@@ -148,21 +172,20 @@ object Prefs {
         return k.timeInMillis
     }
 
-    // Apps are blocked right now (one-off timer OR inside the daily window)
-    fun isBlockedNow(c: Context) = isBlocking(c) || (schedActive(c) && inWindow(c))
+    // This app is blocked right now (its one-off timer OR its protection + inside the daily window)
+    fun isBlockedNow(c: Context, p: String) = isTimerBlocked(c, p) || (isProtected(c, p) && inWindow(c))
+    fun anyBlockedNow(c: Context) = lockedApps(c).any { isBlockedNow(c, it) }
 
-    // When the current block ends (0 if not blocked)
-    fun blockEndsAt(c: Context): Long {
+    // When the block of this app ends (0 if not blocked)
+    fun blockEndsAt(c: Context, p: String): Long {
         var t = 0L
-        if (isBlocking(c)) t = blockUntil(c)
-        if (schedActive(c) && inWindow(c)) t = maxOf(t, windowEndMillis(c))
+        if (isTimerBlocked(c, p)) t = timerUntil(c, p)
+        if (isProtected(c, p) && inWindow(c)) t = maxOf(t, windowEndMillis(c))
         return t
     }
+    fun blockEndsAtAny(c: Context): Long = lockedApps(c).maxOfOrNull { blockEndsAt(c, it) } ?: 0L
 
-    // Uninstall / force-stop / settings tampering is blocked for the whole timer or schedule period
-    fun uninstallProtected(c: Context) = isBlocking(c) || schedActive(c)
-
-    // Ask for the PIN when apps are NOT blocked (outside the block window / after the timer)?
+    // ---------------- Ask PIN when not blocked? ----------------
     fun askPin(c: Context) = sp(c).getBoolean("ask_pin", true)
     fun setAskPin(c: Context, on: Boolean) = sp(c).edit().putBoolean("ask_pin", on).apply()
 }

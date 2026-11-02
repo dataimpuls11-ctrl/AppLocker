@@ -48,7 +48,7 @@ class MainActivity : Activity() {
         show()
     }
 
-    private fun show() { if (Prefs.isBlockedNow(this)) buildBlocked() else build() }
+    private fun show() { if (Prefs.anyBlockedNow(this)) buildBlocked() else build() }
 
     override fun onPause() { handler.removeCallbacksAndMessages(null); super.onPause() }
 
@@ -81,7 +81,7 @@ class MainActivity : Activity() {
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(48, 96, 48, 48) }
         col.addView(TextView(this).apply { text = "Block is ON"; textSize = 26f })
         val extra = if (Prefs.schedActive(this))
-            "\nDaily schedule ${fmt(Prefs.schedStart(this))} - ${fmt(Prefs.schedEnd(this))} (${Prefs.schedTz(this)}), ${Prefs.daysLeft(this)} day(s) left." else ""
+            "\nDaily schedule ${fmt(Prefs.schedStart(this))} - ${fmt(Prefs.schedEnd(this))} (${Prefs.schedTz(this)})." else ""
         col.addView(TextView(this).apply {
             text = "\nLocked apps cannot be opened or uninstalled right now. Settings cannot be changed until the block ends.$extra\n"
             textSize = 16f
@@ -91,7 +91,7 @@ class MainActivity : Activity() {
         setContentView(col)
         val tick = object : Runnable {
             override fun run() {
-                val left = Prefs.blockEndsAt(this@MainActivity) - Prefs.now(this@MainActivity)
+                val left = Prefs.blockEndsAtAny(this@MainActivity) - Prefs.now(this@MainActivity)
                 if (left <= 0) { build(); return }
                 val s = left / 1000
                 clock.text = "%02d:%02d:%02d".format(s / 3600, (s % 3600) / 60, s % 60)
@@ -124,18 +124,23 @@ class MainActivity : Activity() {
             }
         })
 
-        // ---- Daily schedule ----
-        if (Prefs.schedActive(this)) {
+        // ---- Daily schedule (every app has its own days) ----
+        val active = Prefs.schedActive(this)
+        if (active) {
+            val pm0 = packageManager
+            val lines = Prefs.protectedApps(this).joinToString("\n") { p ->
+                val n = try { pm0.getApplicationLabel(pm0.getApplicationInfo(p, 0)).toString() } catch (e: Exception) { p }
+                "- $n: ${Prefs.daysLeft(this, p)} day(s) left"
+            }
             col.addView(TextView(this).apply {
-                text = "\nDaily block ACTIVE: ${fmt(Prefs.schedStart(this@MainActivity))} - ${fmt(Prefs.schedEnd(this@MainActivity))} (${Prefs.schedTz(this@MainActivity)})\n" +
-                    "Days left: ${Prefs.daysLeft(this@MainActivity)}\n" +
-                    "Uninstall stays blocked until the days finish. You can add days, not reduce them."
+                text = "\nDaily block ACTIVE: ${fmt(Prefs.schedStart(this@MainActivity))} - ${fmt(Prefs.schedEnd(this@MainActivity))} (${Prefs.schedTz(this@MainActivity)})\n$lines\n\n" +
+                    "Each app keeps its own days. Uninstall stays blocked for an app until its own days finish."
                 textSize = 16f
             })
-            val clock = TextView(this)
-            col.addView(clock)
-            startClock(clock) { Prefs.schedTz(this@MainActivity) }
-            val add = EditText(this).apply { hint = "Add more days"; inputType = InputType.TYPE_CLASS_NUMBER }
+            val clock0 = TextView(this)
+            col.addView(clock0)
+            startClock(clock0) { Prefs.schedTz(this@MainActivity) }
+            val add = EditText(this).apply { hint = "Add days to ALL protected apps"; inputType = InputType.TYPE_CLASS_NUMBER }
             col.addView(add)
             col.addView(Button(this).apply {
                 text = "Add days"
@@ -169,30 +174,36 @@ class MainActivity : Activity() {
                 TimePickerDialog(this, { _, h, m -> endMin = h * 60 + m; refresh() }, endMin / 60, endMin % 60, true).show()
             }
             col.addView(b1); col.addView(b2)
-            val days = EditText(this).apply { hint = "For how many days (e.g. 30)"; inputType = InputType.TYPE_CLASS_NUMBER }
-            col.addView(days)
-            col.addView(Button(this).apply {
-                text = "Start daily block"
-                setOnClickListener {
-                    val d = days.text.toString().toIntOrNull() ?: 0
-                    when {
-                        d <= 0 -> toast("Enter number of days")
-                        startMin == endMin -> toast("Start and end time cannot be the same")
-                        Prefs.lockedApps(this@MainActivity).isEmpty() -> toast("Tick at least one app first")
-                        !accessOn() -> toast("Turn on Accessibility first")
-                        else -> AlertDialog.Builder(this@MainActivity)
-                            .setTitle("Block ${fmt(startMin)} - ${fmt(endMin)} (${zones[tzIndex].first}) for $d day(s)?")
-                            .setMessage("Cannot be cancelled. Uninstall stays blocked for all $d days. You can only add more days later.")
-                            .setPositiveButton("Start") { _, _ ->
-                                Prefs.startSchedule(this@MainActivity, startMin, endMin, d, zones[tzIndex].second)
-                                if (!Prefs.timeSynced(this@MainActivity)) toast("Real time not checked online yet; phone clock is used until the check succeeds")
-                                show()
-                            }
-                            .setNegativeButton("Cancel", null).show()
-                    }
-                }
-            })
         }
+
+        col.addView(TextView(this).apply {
+            text = "\nTick apps below, enter days, then press the button. Only apps not already protected get a NEW period; protected apps keep their own days."
+            textSize = 14f
+        })
+        val days = EditText(this).apply { hint = "Days for the newly ticked apps (e.g. 21)"; inputType = InputType.TYPE_CLASS_NUMBER }
+        col.addView(days)
+        col.addView(Button(this).apply {
+            text = "Start block for newly ticked apps"
+            setOnClickListener {
+                val d = days.text.toString().toIntOrNull() ?: 0
+                val fresh = Prefs.lockedApps(this@MainActivity).filter { !Prefs.isProtected(this@MainActivity, it) }
+                when {
+                    d <= 0 -> toast("Enter number of days")
+                    !active && startMin == endMin -> toast("Start and end time cannot be the same")
+                    fresh.isEmpty() -> toast("Tick a new app first")
+                    !accessOn() -> toast("Turn on Accessibility first")
+                    else -> AlertDialog.Builder(this@MainActivity)
+                        .setTitle("Protect ${fresh.size} app(s) for $d day(s)?")
+                        .setMessage("Cannot be cancelled. These apps cannot be untick-ed or uninstalled for $d days from now. Other apps keep their own days.")
+                        .setPositiveButton("Start") { _, _ ->
+                            Prefs.startSchedule(this@MainActivity, startMin, endMin, d, zones[tzIndex].second)
+                            if (!Prefs.timeSynced(this@MainActivity)) toast("Real time not checked online yet; phone clock is used until the check succeeds")
+                            show()
+                        }
+                        .setNegativeButton("Cancel", null).show()
+                }
+            }
+        })
 
         // ---- One-off block timer ----
         col.addView(TextView(this).apply { text = "\nOne-time block timer (starts right now)"; textSize = 16f })
@@ -278,7 +289,7 @@ class MainActivity : Activity() {
                 compoundDrawablePadding = 24
                 setOnCheckedChangeListener { _, on ->
                     when {
-                        !on && Prefs.uninstallProtected(this@MainActivity) -> { isChecked = true; toast("Cannot remove an app while a block is active") }
+                        !on && Prefs.isLockedHard(this@MainActivity, a.packageName) -> { isChecked = true; toast("This app is protected until its days finish") }
                         else -> Prefs.setLocked(this@MainActivity, a.packageName, on)
                     }
                 }

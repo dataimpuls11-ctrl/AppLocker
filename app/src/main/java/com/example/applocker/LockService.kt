@@ -41,7 +41,7 @@ class LockService : AccessibilityService() {
         override fun run() {
             if (ticks++ % 60 == 0) Prefs.syncNow(this@LockService)
             val p = lastPkg
-            if (p.isNotEmpty() && p in Prefs.lockedApps(this@LockService) && Prefs.isBlockedNow(this@LockService)) showBlocked(p)
+            if (p.isNotEmpty() && p in Prefs.lockedApps(this@LockService) && Prefs.isBlockedNow(this@LockService, p)) showBlocked(p)
             handler.postDelayed(this, 15_000)
         }
     }
@@ -77,7 +77,7 @@ class LockService : AccessibilityService() {
         if (pkg !in Prefs.lockedApps(this)) return
 
         // Blocked now (timer or daily window): no PIN, show live countdown
-        if (Prefs.isBlockedNow(this)) { showBlocked(pkg); return }
+        if (Prefs.isBlockedNow(this, pkg)) { showBlocked(pkg); return }
 
         // Not blocked: ask for PIN only if the option is on, and not inside the PIN grace period
         if (Prefs.hasPin(this) && Prefs.askPin(this) && !Prefs.isInGrace(this, pkg)) {
@@ -95,7 +95,7 @@ class LockService : AccessibilityService() {
         collect(root, sb)
         val t = sb.toString().lowercase()
         // App labels come from the phone itself, so they are in the phone's own language
-        val names = Prefs.lockedApps(this).mapNotNull {
+        val names = Prefs.hardApps(this).mapNotNull {
             try { packageManager.getApplicationLabel(packageManager.getApplicationInfo(it, 0)).toString().lowercase() }
             catch (e: Exception) { null }
         } + "applocker"

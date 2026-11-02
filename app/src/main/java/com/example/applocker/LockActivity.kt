@@ -43,7 +43,7 @@ class LockActivity : Activity() {
             setContentView(root)
             val tick = object : Runnable {
                 override fun run() {
-                    val left = Prefs.blockEndsAt(this@LockActivity) - Prefs.now(this@LockActivity)
+                    val left = Prefs.blockEndsAt(this@LockActivity, target) - Prefs.now(this@LockActivity)
                     if (left <= 0) { intent.putExtra("blocked", false); recreate(); return }
                     val s = left / 1000
                     clock.text = "%02d:%02d:%02d".format(s / 3600, (s % 3600) / 60, s % 60)
