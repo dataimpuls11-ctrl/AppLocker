@@ -156,4 +156,8 @@ object Prefs {
 
     // Uninstall / force-stop / settings tampering is blocked for the whole timer or schedule period
     fun uninstallProtected(c: Context) = isBlocking(c) || schedActive(c)
+
+    // Ask for the PIN when apps are NOT blocked (outside the block window / after the timer)?
+    fun askPin(c: Context) = sp(c).getBoolean("ask_pin", true)
+    fun setAskPin(c: Context, on: Boolean) = sp(c).edit().putBoolean("ask_pin", on).apply()
 }

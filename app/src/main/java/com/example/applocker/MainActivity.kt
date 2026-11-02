@@ -217,6 +217,13 @@ class MainActivity : Activity() {
             }
         })
 
+        // Ask PIN when not blocked?
+        col.addView(CheckBox(this).apply {
+            text = "Ask PIN when apps are not blocked (untick = apps open freely outside block time)"
+            isChecked = Prefs.askPin(this@MainActivity)
+            setOnCheckedChangeListener { _, on -> Prefs.setAskPin(this@MainActivity, on) }
+        })
+
         // PIN grace timer
         val mins = EditText(this).apply {
             hint = "Minutes an app stays open after correct PIN"

@@ -79,8 +79,8 @@ class LockService : AccessibilityService() {
         // Blocked now (timer or daily window): no PIN, show live countdown
         if (Prefs.isBlockedNow(this)) { showBlocked(pkg); return }
 
-        // Normal: ask for PIN unless inside the PIN grace period
-        if (!Prefs.isInGrace(this, pkg)) {
+        // Not blocked: ask for PIN only if the option is on, and not inside the PIN grace period
+        if (Prefs.askPin(this) && !Prefs.isInGrace(this, pkg)) {
             startActivity(
                 Intent(this, LockActivity::class.java)
                     .putExtra("pkg", pkg)
