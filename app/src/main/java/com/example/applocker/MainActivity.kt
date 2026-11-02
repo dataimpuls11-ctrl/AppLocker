@@ -68,8 +68,7 @@ class MainActivity : Activity() {
         val r = object : Runnable {
             override fun run() {
                 f.timeZone = TimeZone.getTimeZone(tz())
-                tv.text = "Time there: " + f.format(Date(Prefs.now(this@MainActivity))) +
-                    if (Prefs.timeSynced(this@MainActivity)) "" else "  (not yet checked online)"
+                tv.text = "Time there: " + f.format(Date(Prefs.now(this@MainActivity)))
                 handler.postDelayed(this, 1000)
             }
         }
@@ -197,7 +196,6 @@ class MainActivity : Activity() {
                         .setMessage("Cannot be cancelled. These apps cannot be untick-ed or uninstalled for $d days from now. Other apps keep their own days.")
                         .setPositiveButton("Start") { _, _ ->
                             Prefs.startSchedule(this@MainActivity, startMin, endMin, d, zones[tzIndex].second)
-                            if (!Prefs.timeSynced(this@MainActivity)) toast("Real time not checked online yet; phone clock is used until the check succeeds")
                             show()
                         }
                         .setNegativeButton("Cancel", null).show()
