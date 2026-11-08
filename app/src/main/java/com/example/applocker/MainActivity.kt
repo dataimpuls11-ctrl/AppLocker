@@ -123,6 +123,50 @@ class MainActivity : Activity() {
             }
         })
 
+        // Message shown under "blocked" on the block screen
+        val msg = EditText(this).apply {
+            hint = "Message shown on the blocked screen (optional)"
+            setText(Prefs.blockMsg(this@MainActivity))
+        }
+        col.addView(TextView(this).apply { text = "\nBlock screen message"; textSize = 16f })
+        col.addView(msg)
+        col.addView(Button(this).apply {
+            text = "Save message"
+            setOnClickListener { Prefs.setBlockMsg(this@MainActivity, msg.text.toString().trim()); toast("Saved") }
+        })
+
+        // ---- Manual block (PIN needed to unblock) ----
+        col.addView(TextView(this).apply { text = "\nManual block (stays blocked until you unblock it with your PIN)"; textSize = 16f })
+        if (!Prefs.hasPin(this)) {
+            col.addView(TextView(this).apply { text = "Set a PIN above first, so only you can unblock." })
+        } else {
+            col.addView(Button(this).apply {
+                text = "Block ticked apps now"
+                setOnClickListener {
+                    val n = Prefs.blockManual(this@MainActivity)
+                    if (n == 0) toast("Tick apps first (or they are already blocked)") else { toast("$n app(s) blocked"); build() }
+                }
+            })
+            col.addView(Button(this).apply {
+                text = "Unblock manually blocked apps (PIN)"
+                setOnClickListener {
+                    val et = EditText(this@MainActivity).apply {
+                        hint = "PIN"
+                        inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD
+                    }
+                    AlertDialog.Builder(this@MainActivity)
+                        .setTitle("Enter PIN to unblock")
+                        .setView(et)
+                        .setPositiveButton("Unblock") { _, _ ->
+                            if (Prefs.checkPin(this@MainActivity, et.text.toString())) {
+                                Prefs.unblockManual(this@MainActivity); toast("Unblocked"); build()
+                            } else toast("Wrong PIN")
+                        }
+                        .setNegativeButton("Cancel", null).show()
+                }
+            })
+        }
+
         // ---- Daily schedule (every app has its own days) ----
         val active = Prefs.schedActive(this)
         if (active) {
@@ -281,13 +325,13 @@ class MainActivity : Activity() {
         val locked = Prefs.lockedApps(this)
         for (a in apps) {
             list.addView(CheckBox(this).apply {
-                text = pm.getApplicationLabel(a)
+                text = pm.getApplicationLabel(a).toString() + if (Prefs.manualBlocked(this@MainActivity, a.packageName)) "  [BLOCKED]" else ""
                 isChecked = a.packageName in locked
                 setCompoundDrawablesWithIntrinsicBounds(pm.getApplicationIcon(a), null, null, null)
                 compoundDrawablePadding = 24
                 setOnCheckedChangeListener { _, on ->
                     when {
-                        !on && Prefs.isLockedHard(this@MainActivity, a.packageName) -> { isChecked = true; toast("This app is protected until its days finish") }
+                        !on && Prefs.isLockedHard(this@MainActivity, a.packageName) -> { isChecked = true; toast("This app is blocked/protected. Unblock it with your PIN or wait until its days finish") }
                         else -> Prefs.setLocked(this@MainActivity, a.packageName, on)
                     }
                 }

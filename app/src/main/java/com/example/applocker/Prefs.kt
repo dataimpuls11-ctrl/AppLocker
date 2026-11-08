@@ -108,7 +108,22 @@ object Prefs {
     fun isTimerBlocked(c: Context, p: String) = now(c) < timerUntil(c, p)
 
     // App cannot be unticked or uninstalled right now
-    fun isLockedHard(c: Context, p: String) = isProtected(c, p) || isTimerBlocked(c, p)
+    fun isLockedHard(c: Context, p: String) = isProtected(c, p) || isTimerBlocked(c, p) || manualBlocked(c, p)
+
+    // Manual block: stays blocked until unblocked with the PIN inside AppLocker
+    fun manualBlocked(c: Context, p: String) = sp(c).getBoolean("manual_$p", false)
+    fun blockManual(c: Context): Int {
+        val fresh = lockedApps(c).filter { !manualBlocked(c, it) }
+        val e = sp(c).edit()
+        for (p in fresh) e.putBoolean("manual_$p", true)
+        e.apply()
+        return fresh.size
+    }
+    fun unblockManual(c: Context) {
+        val e = sp(c).edit()
+        for (p in lockedApps(c)) e.putBoolean("manual_$p", false)
+        e.apply()
+    }
     fun hardApps(c: Context): List<String> = lockedApps(c).filter { isLockedHard(c, it) }
     fun protectedApps(c: Context): List<String> = lockedApps(c).filter { isProtected(c, it) }
     fun schedActive(c: Context) = lockedApps(c).any { isProtected(c, it) }
@@ -173,8 +188,9 @@ object Prefs {
     }
 
     // This app is blocked right now (its one-off timer OR its protection + inside the daily window)
-    fun isBlockedNow(c: Context, p: String) = isTimerBlocked(c, p) || (isProtected(c, p) && inWindow(c))
-    fun anyBlockedNow(c: Context) = lockedApps(c).any { isBlockedNow(c, it) }
+    fun isBlockedNow(c: Context, p: String) = manualBlocked(c, p) || isTimerBlocked(c, p) || (isProtected(c, p) && inWindow(c))
+    // Timed blocks only (manual blocks must NOT lock the AppLocker screen, or you could never unblock)
+    fun anyBlockedNow(c: Context) = lockedApps(c).any { isTimerBlocked(c, it) || (isProtected(c, it) && inWindow(c)) }
 
     // When the block of this app ends (0 if not blocked)
     fun blockEndsAt(c: Context, p: String): Long {
@@ -184,6 +200,10 @@ object Prefs {
         return t
     }
     fun blockEndsAtAny(c: Context): Long = lockedApps(c).maxOfOrNull { blockEndsAt(c, it) } ?: 0L
+
+    // ---------------- Message shown on the blocked screen ----------------
+    fun blockMsg(c: Context): String = sp(c).getString("block_msg", "") ?: ""
+    fun setBlockMsg(c: Context, t: String) = sp(c).edit().putString("block_msg", t).apply()
 
     // ---------------- Ask PIN when not blocked? ----------------
     fun askPin(c: Context) = sp(c).getBoolean("ask_pin", true)

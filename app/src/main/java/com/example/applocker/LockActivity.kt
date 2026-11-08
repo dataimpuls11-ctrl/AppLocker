@@ -39,12 +39,27 @@ class LockActivity : Activity() {
             root.addView(TextView(this).apply { text = "$label is blocked"; textSize = 22f; gravity = Gravity.CENTER })
             val clock = TextView(this).apply { textSize = 40f; gravity = Gravity.CENTER; setPadding(0, 48, 0, 48) }
             root.addView(clock)
+            val note = Prefs.blockMsg(this)
+            if (note.isNotEmpty()) {
+                root.addView(TextView(this).apply {
+                    text = note; textSize = 18f; gravity = Gravity.CENTER; setPadding(0, 0, 0, 48)
+                })
+            }
             root.addView(Button(this).apply { text = "Go home"; setOnClickListener { goHome() } })
             setContentView(root)
             val tick = object : Runnable {
                 override fun run() {
+                    if (Prefs.manualBlocked(this@LockActivity, target)) {
+                        clock.textSize = 20f
+                        clock.text = "Blocked.\nUnblock it from AppLocker with your PIN."
+                        handler.postDelayed(this, 1000)
+                        return
+                    }
                     val left = Prefs.blockEndsAt(this@LockActivity, target) - Prefs.now(this@LockActivity)
-                    if (left <= 0) { intent.putExtra("blocked", false); recreate(); return }
+                    if (left <= 0) {
+                        if (!Prefs.hasPin(this@LockActivity) || !Prefs.askPin(this@LockActivity)) { finish(); return }
+                        intent.putExtra("blocked", false); recreate(); return
+                    }
                     val s = left / 1000
                     clock.text = "%02d:%02d:%02d".format(s / 3600, (s % 3600) / 60, s % 60)
                     handler.postDelayed(this, 1000)
