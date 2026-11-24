@@ -90,8 +90,8 @@ class MainActivity : Activity() {
         setContentView(col)
         val tick = object : Runnable {
             override fun run() {
-                val left = Prefs.blockEndsAtAny(this@MainActivity) - Prefs.now(this@MainActivity)
-                if (left <= 0) { build(); return }
+                val left = maxOf(0L, Prefs.blockEndsAtAny(this@MainActivity) - Prefs.now(this@MainActivity))
+                if (!Prefs.anyBlockedNow(this@MainActivity)) { build(); return }
                 val s = left / 1000
                 clock.text = "%02d:%02d:%02d".format(s / 3600, (s % 3600) / 60, s % 60)
                 handler.postDelayed(this, 1000)
@@ -112,6 +112,12 @@ class MainActivity : Activity() {
             val ago = (SystemClock.elapsedRealtime() - Prefs.lastBeat) / 1000
             text = if (Prefs.lastBeat != 0L && ago < 5) "Block service: RUNNING"
                    else "Block service: NOT RUNNING - turn Accessibility OFF and ON again, and set Battery to Unrestricted"
+            textSize = 14f
+        })
+        col.addView(TextView(this).apply {
+            val diff = (Prefs.now(this@MainActivity) - System.currentTimeMillis()) / 1000
+            text = if (Prefs.timeSynced(this@MainActivity)) "Clock check: internet time differs from phone clock by $diff s"
+                   else "Clock check: not checked online yet (phone clock is used)"
             textSize = 14f
         })
         col.addView(TextView(this).apply {
@@ -322,6 +328,14 @@ class MainActivity : Activity() {
             }
         })
 
+        col.addView(TextView(this).apply {
+            val v = try { packageManager.getPackageInfo(packageName, 0).versionName } catch (e: Exception) { "?" }
+            text = "\nVersion $v - diagnostics (latest first):\n" + Prefs.logText().ifEmpty { "(nothing yet)" }
+            textSize = 11f
+            typeface = android.graphics.Typeface.MONOSPACE
+        })
+        col.addView(Button(this).apply { text = "Refresh diagnostics"; setOnClickListener { build() } })
+
         col.addView(TextView(this).apply { text = "\nTick the apps to lock:"; textSize = 16f })
         list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         col.addView(list)
@@ -343,7 +357,9 @@ class MainActivity : Activity() {
             list.addView(CheckBox(this).apply {
                 text = pm.getApplicationLabel(a).toString() + when {
                     Prefs.manualBlocked(this@MainActivity, a.packageName) -> "  [BLOCKED]"
-                    Prefs.isProtected(this@MainActivity, a.packageName) -> "  [${Prefs.daysLeft(this@MainActivity, a.packageName)} day(s) left]"
+                    Prefs.isProtected(this@MainActivity, a.packageName) ->
+                        "  [${Prefs.daysLeft(this@MainActivity, a.packageName)} day(s) left, ${fmt(Prefs.pStart(this@MainActivity, a.packageName))}-${fmt(Prefs.pEnd(this@MainActivity, a.packageName))}" +
+                        (if (Prefs.isBlockedNow(this@MainActivity, a.packageName)) ", BLOCKED NOW" else "") + "]"
                     Prefs.isTimerBlocked(this@MainActivity, a.packageName) -> "  [timer running]"
                     a.packageName in locked -> "  [ticked, NOT blocking yet - press Start]"
                     else -> ""

@@ -55,8 +55,8 @@ class LockActivity : Activity() {
                         handler.postDelayed(this, 1000)
                         return
                     }
-                    val left = Prefs.blockEndsAt(this@LockActivity, target) - Prefs.now(this@LockActivity)
-                    if (left <= 0) {
+                    val left = maxOf(0L, Prefs.blockEndsAt(this@LockActivity, target) - Prefs.now(this@LockActivity))
+                    if (!Prefs.isBlockedNow(this@LockActivity, target)) {
                         if (!Prefs.hasPin(this@LockActivity) || !Prefs.askPin(this@LockActivity)) { finish(); return }
                         intent.putExtra("blocked", false); recreate(); return
                     }

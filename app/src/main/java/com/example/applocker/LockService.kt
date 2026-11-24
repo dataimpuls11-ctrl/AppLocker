@@ -2,11 +2,18 @@ package com.example.applocker
 
 import android.accessibilityservice.AccessibilityService
 import android.content.Intent
+import android.graphics.Color
+import android.graphics.PixelFormat
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.view.Gravity
+import android.view.View
+import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.widget.LinearLayout
+import android.widget.TextView
 
 class LockService : AccessibilityService() {
 
@@ -51,6 +58,7 @@ class LockService : AccessibilityService() {
         override fun run() {
             try {
                 Prefs.lastBeat = SystemClock.elapsedRealtime()
+                if (overlay != null) updateOverlayClock()
                 if (ticks++ % 1800 == 0) Prefs.syncNow(this@LockService)
                 Enforcer.apply(this@LockService)
                 enforce()
@@ -66,10 +74,70 @@ class LockService : AccessibilityService() {
         if (p in locked && Prefs.isBlockedNow(this, p)) closeAndBlock(p)
     }
 
-    // Throw the app off the screen first, then show the block screen
+    private var overlay: View? = null
+    private var overlayClock: TextView? = null
+    private var overlayPkg = ""
+
+    // Instant block: a full-screen message drawn by this service itself (needs no extra permission and
+    // is not delayed by phone-maker restrictions). It covers the app at once; 2.5 s later the app is sent home.
     private fun closeAndBlock(p: String) {
-        performGlobalAction(GLOBAL_ACTION_HOME)
-        showBlocked(p)
+        Prefs.log("BLOCK $p")
+        showOverlay(p)
+        if (overlay == null) {            // overlay not possible: old method
+            performGlobalAction(GLOBAL_ACTION_HOME)
+            showBlocked(p)
+        }
+    }
+
+    private fun showOverlay(pkg: String) {
+        if (overlay != null) return
+        try {
+            val label = try { packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString() }
+                        catch (e: Exception) { pkg }
+            val root = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                setPadding(64, 64, 64, 64)
+                setBackgroundColor(Color.WHITE)
+            }
+            root.addView(TextView(this).apply {
+                text = "$label is blocked"; textSize = 22f; gravity = Gravity.CENTER; setTextColor(Color.BLACK)
+            })
+            val clock = TextView(this).apply {
+                textSize = 36f; gravity = Gravity.CENTER; setPadding(0, 40, 0, 40); setTextColor(Color.BLACK)
+            }
+            root.addView(clock)
+            val note = Prefs.blockMsg(this)
+            if (note.isNotEmpty()) root.addView(TextView(this).apply {
+                text = note; textSize = 18f; gravity = Gravity.CENTER; setTextColor(Color.BLACK)
+            })
+            val lp = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                PixelFormat.OPAQUE
+            )
+            (getSystemService(WINDOW_SERVICE) as WindowManager).addView(root, lp)
+            overlay = root; overlayClock = clock; overlayPkg = pkg
+            updateOverlayClock()
+            handler.postDelayed({ performGlobalAction(GLOBAL_ACTION_HOME) }, 2500)
+            handler.postDelayed({ hideOverlay() }, 3000)
+        } catch (e: Exception) {
+            Prefs.log("overlay failed: ${e.javaClass.simpleName}")
+            overlay = null
+        }
+    }
+
+    private fun hideOverlay() {
+        overlay?.let { try { (getSystemService(WINDOW_SERVICE) as WindowManager).removeView(it) } catch (e: Exception) { } }
+        overlay = null; overlayClock = null
+    }
+
+    private fun updateOverlayClock() {
+        val c = overlayClock ?: return
+        if (Prefs.manualBlocked(this, overlayPkg)) { c.textSize = 20f; c.text = "Blocked until you unblock it in AppLocker"; return }
+        val left = maxOf(0L, Prefs.blockEndsAt(this, overlayPkg) - Prefs.now(this)) / 1000
+        c.text = "%02d:%02d:%02d".format(left / 3600, (left % 3600) / 60, left % 60)
     }
 
     override fun onServiceConnected() {
@@ -82,7 +150,7 @@ class LockService : AccessibilityService() {
         handler.post(periodic)
     }
 
-    override fun onDestroy() { handler.removeCallbacksAndMessages(null); super.onDestroy() }
+    override fun onDestroy() { handler.removeCallbacksAndMessages(null); hideOverlay(); super.onDestroy() }
 
     private fun showBlocked(pkg: String) {
         startActivity(
@@ -124,6 +192,7 @@ class LockService : AccessibilityService() {
             for (d in longArrayOf(300, 900, 2000)) handler.postDelayed({ guard() }, d)
         }
 
+        if (pkg in Prefs.lockedApps(this)) Prefs.log("open $pkg blockedNow=${Prefs.isBlockedNow(this, pkg)}")
         if (pkg !in Prefs.lockedApps(this)) return
 
         // Blocked now (timer or daily window): no PIN, show live countdown

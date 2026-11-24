@@ -21,6 +21,17 @@ object Prefs {
     // Updated every second by the blocking service; lets the screen show whether the service is alive
     @Volatile var lastBeat = 0L
 
+    // Small in-memory log (latest first) shown on the AppLocker screen, to see what the blocker is doing
+    private val logLines = java.util.ArrayDeque<String>()
+    fun log(msg: String) {
+        synchronized(logLines) {
+            val t = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date())
+            logLines.addFirst("$t $msg")
+            while (logLines.size > 25) logLines.removeLast()
+        }
+    }
+    fun logText(): String = synchronized(logLines) { logLines.joinToString("\n") }
+
     // ---------------- Trusted time (ignores the phone clock once synced) ----------------
     private fun bootCount(c: Context) = Settings.Global.getInt(c.contentResolver, Settings.Global.BOOT_COUNT, -1)
 
@@ -109,9 +120,12 @@ object Prefs {
     //  - prot_<pkg>  : daily-schedule protection (uninstall blocked + blocked during the daily window)
     //  - timer_<pkg> : one-off block timer (blocked the whole time)
     fun protUntil(c: Context, p: String) = sp(c).getLong("prot_$p", 0L)
-    fun isProtected(c: Context, p: String) = now(c) < protUntil(c, p)
+    // Blocks stay ON if EITHER the internet time or the phone clock says the time is not over yet,
+    // and start as soon as EITHER clock says it has begun. So a lagging clock can never delay a block.
+    private fun before(c: Context, t: Long) = now(c) < t || System.currentTimeMillis() < t
+    fun isProtected(c: Context, p: String) = before(c, protUntil(c, p))
     fun timerUntil(c: Context, p: String) = sp(c).getLong("timer_$p", 0L)
-    fun isTimerBlocked(c: Context, p: String) = now(c) < timerUntil(c, p)
+    fun isTimerBlocked(c: Context, p: String) = before(c, timerUntil(c, p))
 
     // App cannot be unticked or uninstalled right now
     fun isLockedHard(c: Context, p: String) = isProtected(c, p) || isTimerBlocked(c, p) || manualBlocked(c, p)
@@ -171,12 +185,15 @@ object Prefs {
     fun pEnd(c: Context, p: String) = sp(c).getInt("pe_$p", 6 * 60)
     fun pTz(c: Context, p: String): String = sp(c).getString("ptz_$p", null) ?: TimeZone.getDefault().id
 
-    private fun cal(c: Context, p: String): Calendar =
-        Calendar.getInstance(TimeZone.getTimeZone(pTz(c, p))).also { it.timeInMillis = now(c) }
+    private fun cal(c: Context, p: String, t: Long = now(c)): Calendar =
+        Calendar.getInstance(TimeZone.getTimeZone(pTz(c, p))).also { it.timeInMillis = t }
 
     // 00:00 - 24:00 means "all day"
-    fun inWindow(c: Context, p: String): Boolean {
-        val k = cal(c, p)
+    fun inWindow(c: Context, p: String): Boolean =
+        inWindowAt(c, p, now(c)) || inWindowAt(c, p, System.currentTimeMillis())
+
+    private fun inWindowAt(c: Context, p: String, t: Long): Boolean {
+        val k = cal(c, p, t)
         val m = k.get(Calendar.HOUR_OF_DAY) * 60 + k.get(Calendar.MINUTE)
         val s = pStart(c, p); val e = pEnd(c, p)
         return when {
