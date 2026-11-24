@@ -1,5 +1,7 @@
 package com.example.applocker
 
+import android.app.admin.DevicePolicyManager
+import android.content.ComponentName
 import android.content.Context
 import android.os.SystemClock
 import android.provider.Settings
@@ -15,6 +17,9 @@ object Prefs {
 
     // true while the AppLocker settings screen has been unlocked this session
     @Volatile var mainUnlocked = false
+
+    // Updated every second by the blocking service; lets the screen show whether the service is alive
+    @Volatile var lastBeat = 0L
 
     // ---------------- Trusted time (ignores the phone clock once synced) ----------------
     private fun bootCount(c: Context) = Settings.Global.getInt(c.contentResolver, Settings.Global.BOOT_COUNT, -1)
@@ -86,6 +91,7 @@ object Prefs {
         val set = lockedApps(c).toMutableSet()
         if (locked) set.add(pkg) else set.remove(pkg)
         sp(c).edit().putStringSet("locked", set).apply()
+        if (!locked) Enforcer.release(c, pkg)
     }
 
     // ---------------- PIN grace ----------------
@@ -144,9 +150,10 @@ object Prefs {
         val fresh = lockedApps(c).filter { !isProtected(c, it) }
         if (fresh.isEmpty()) return 0
         val e = sp(c).edit()
-        if (!schedActive(c)) e.putInt("sched_start", startMin).putInt("sched_end", endMin).putString("sched_tz", tz)
         val until = now(c) + days * 86_400_000L
-        for (p in fresh) e.putLong("prot_$p", until)
+        for (p in fresh) {
+            e.putLong("prot_$p", until).putInt("ps_$p", startMin).putInt("pe_$p", endMin).putString("ptz_$p", tz)
+        }
         e.apply()
         return fresh.size
     }
@@ -159,18 +166,19 @@ object Prefs {
         e.apply()
     }
 
-    // ---------------- Daily window ----------------
-    fun schedStart(c: Context) = sp(c).getInt("sched_start", 21 * 60)
-    fun schedEnd(c: Context) = sp(c).getInt("sched_end", 6 * 60)
-    fun schedTz(c: Context): String = sp(c).getString("sched_tz", null) ?: TimeZone.getDefault().id
+    // ---------------- Daily window (each app keeps its own) ----------------
+    fun pStart(c: Context, p: String) = sp(c).getInt("ps_$p", 21 * 60)
+    fun pEnd(c: Context, p: String) = sp(c).getInt("pe_$p", 6 * 60)
+    fun pTz(c: Context, p: String): String = sp(c).getString("ptz_$p", null) ?: TimeZone.getDefault().id
 
-    private fun cal(c: Context): Calendar =
-        Calendar.getInstance(TimeZone.getTimeZone(schedTz(c))).also { it.timeInMillis = now(c) }
+    private fun cal(c: Context, p: String): Calendar =
+        Calendar.getInstance(TimeZone.getTimeZone(pTz(c, p))).also { it.timeInMillis = now(c) }
 
-    fun inWindow(c: Context): Boolean {
-        val k = cal(c)
+    // 00:00 - 24:00 means "all day"
+    fun inWindow(c: Context, p: String): Boolean {
+        val k = cal(c, p)
         val m = k.get(Calendar.HOUR_OF_DAY) * 60 + k.get(Calendar.MINUTE)
-        val s = schedStart(c); val e = schedEnd(c)
+        val s = pStart(c, p); val e = pEnd(c, p)
         return when {
             s == e -> false
             s < e -> m in s until e
@@ -178,9 +186,9 @@ object Prefs {
         }
     }
 
-    private fun windowEndMillis(c: Context): Long {
-        val e = schedEnd(c)
-        val k = cal(c)
+    private fun windowEndMillis(c: Context, p: String): Long {
+        val e = pEnd(c, p)
+        val k = cal(c, p)
         k.set(Calendar.HOUR_OF_DAY, e / 60); k.set(Calendar.MINUTE, e % 60)
         k.set(Calendar.SECOND, 0); k.set(Calendar.MILLISECOND, 0)
         if (k.timeInMillis <= now(c)) k.add(Calendar.DAY_OF_YEAR, 1)
@@ -188,15 +196,15 @@ object Prefs {
     }
 
     // This app is blocked right now (its one-off timer OR its protection + inside the daily window)
-    fun isBlockedNow(c: Context, p: String) = manualBlocked(c, p) || isTimerBlocked(c, p) || (isProtected(c, p) && inWindow(c))
+    fun isBlockedNow(c: Context, p: String) = manualBlocked(c, p) || isTimerBlocked(c, p) || (isProtected(c, p) && inWindow(c, p))
     // Timed blocks only (manual blocks must NOT lock the AppLocker screen, or you could never unblock)
-    fun anyBlockedNow(c: Context) = lockedApps(c).any { isTimerBlocked(c, it) || (isProtected(c, it) && inWindow(c)) }
+    fun anyBlockedNow(c: Context) = lockedApps(c).any { isTimerBlocked(c, it) || (isProtected(c, it) && inWindow(c, it)) }
 
     // When the block of this app ends (0 if not blocked)
     fun blockEndsAt(c: Context, p: String): Long {
         var t = 0L
         if (isTimerBlocked(c, p)) t = timerUntil(c, p)
-        if (isProtected(c, p) && inWindow(c)) t = maxOf(t, windowEndMillis(c))
+        if (isProtected(c, p) && inWindow(c, p)) t = maxOf(t, windowEndMillis(c, p))
         return t
     }
     fun blockEndsAtAny(c: Context): Long = lockedApps(c).maxOfOrNull { blockEndsAt(c, it) } ?: 0L
@@ -208,4 +216,44 @@ object Prefs {
     // ---------------- Ask PIN when not blocked? ----------------
     fun askPin(c: Context) = sp(c).getBoolean("ask_pin", true)
     fun setAskPin(c: Context, on: Boolean) = sp(c).edit().putBoolean("ask_pin", on).apply()
+}
+
+
+// Works only when AppLocker is set up as "device owner" (one-time ADB command).
+// Then blocked apps are really HIDDEN from the phone and protected apps cannot be uninstalled by anyone.
+object Enforcer {
+    private fun dpm(c: Context) = c.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+    private fun admin(c: Context) = ComponentName(c, AdminReceiver::class.java)
+
+    fun isOwner(c: Context): Boolean =
+        try { dpm(c).isDeviceOwnerApp(c.packageName) } catch (e: Exception) { false }
+
+    // Hide apps that are blocked right now, show the rest, block uninstall for protected apps
+    fun apply(c: Context) {
+        if (!isOwner(c)) return
+        val d = dpm(c); val a = admin(c)
+        for (p in Prefs.lockedApps(c)) {
+            try {
+                val hide = Prefs.isBlockedNow(c, p)
+                if (d.isApplicationHidden(a, p) != hide) d.setApplicationHidden(a, p, hide)
+                val ub = Prefs.isLockedHard(c, p)
+                if (d.isUninstallBlocked(a, p) != ub) d.setUninstallBlocked(a, p, ub)
+            } catch (e: Exception) { }
+        }
+    }
+
+    fun release(c: Context, p: String) {
+        if (!isOwner(c)) return
+        try {
+            val d = dpm(c); val a = admin(c)
+            d.setApplicationHidden(a, p, false)
+            d.setUninstallBlocked(a, p, false)
+        } catch (e: Exception) { }
+    }
+
+    fun releaseAll(c: Context) {
+        if (!isOwner(c)) return
+        for (p in Prefs.lockedApps(c)) release(c, p)
+        try { dpm(c).clearDeviceOwnerApp(c.packageName) } catch (e: Exception) { }
+    }
 }

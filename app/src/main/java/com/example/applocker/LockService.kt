@@ -45,13 +45,17 @@ class LockService : AccessibilityService() {
 
     private var lastEnforce = 0L
 
-    // Every second: if a locked app that is blocked right now is on screen, close it at once.
+    // Twice a second: if a locked app that is blocked right now is on screen, close it at once.
     // Every ~15 min: re-read the real time from the internet.
     private val periodic = object : Runnable {
         override fun run() {
-            if (ticks++ % 900 == 0) Prefs.syncNow(this@LockService)
-            enforce()
-            handler.postDelayed(this, 1000)
+            try {
+                Prefs.lastBeat = SystemClock.elapsedRealtime()
+                if (ticks++ % 1800 == 0) Prefs.syncNow(this@LockService)
+                Enforcer.apply(this@LockService)
+                enforce()
+            } catch (e: Exception) { /* keep the loop alive */ }
+            handler.postDelayed(this, 500)
         }
     }
 
@@ -92,6 +96,10 @@ class LockService : AccessibilityService() {
     private fun isSurface(pkg: String) = surfaceHints.any { pkg.contains(it) }
 
     override fun onAccessibilityEvent(e: AccessibilityEvent) {
+        try { handle(e) } catch (x: Exception) { /* ignore */ }
+    }
+
+    private fun handle(e: AccessibilityEvent) {
         // Activity changes / content changes inside an already open blocked app
         if (e.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
             val cp = e.packageName?.toString() ?: return

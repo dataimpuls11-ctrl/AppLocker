@@ -9,6 +9,7 @@ import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.Settings
 import android.text.InputType
 import android.view.View
@@ -48,7 +49,7 @@ class MainActivity : Activity() {
         show()
     }
 
-    private fun show() { if (Prefs.anyBlockedNow(this)) buildBlocked() else build() }
+    private fun show() { Enforcer.apply(this); if (Prefs.anyBlockedNow(this)) buildBlocked() else build() }
 
     override fun onPause() { handler.removeCallbacksAndMessages(null); super.onPause() }
 
@@ -79,8 +80,7 @@ class MainActivity : Activity() {
         handler.removeCallbacksAndMessages(null)
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(48, 96, 48, 48) }
         col.addView(TextView(this).apply { text = "Block is ON"; textSize = 26f })
-        val extra = if (Prefs.schedActive(this))
-            "\nDaily schedule ${fmt(Prefs.schedStart(this))} - ${fmt(Prefs.schedEnd(this))} (${Prefs.schedTz(this)})." else ""
+        val extra = ""
         col.addView(TextView(this).apply {
             text = "\nLocked apps cannot be opened or uninstalled right now. Settings cannot be changed until the block ends.$extra\n"
             textSize = 16f
@@ -107,6 +107,17 @@ class MainActivity : Activity() {
         col.addView(TextView(this).apply {
             text = if (accessOn()) "Accessibility: ON" else "Accessibility: OFF (locking will not work!)"
             textSize = 16f
+        })
+        col.addView(TextView(this).apply {
+            val ago = (SystemClock.elapsedRealtime() - Prefs.lastBeat) / 1000
+            text = if (Prefs.lastBeat != 0L && ago < 5) "Block service: RUNNING"
+                   else "Block service: NOT RUNNING - turn Accessibility OFF and ON again, and set Battery to Unrestricted"
+            textSize = 14f
+        })
+        col.addView(TextView(this).apply {
+            text = if (Enforcer.isOwner(this@MainActivity)) "Device owner: ON (blocked apps are hidden)"
+                   else "Device owner: OFF (blocked apps are only closed, not hidden)"
+            textSize = 14f
         })
 
         // PIN
@@ -144,7 +155,7 @@ class MainActivity : Activity() {
                 text = "Block ticked apps now"
                 setOnClickListener {
                     val n = Prefs.blockManual(this@MainActivity)
-                    if (n == 0) toast("Tick apps first (or they are already blocked)") else { toast("$n app(s) blocked"); build() }
+                    if (n == 0) toast("Tick apps first (or they are already blocked)") else { toast("$n app(s) blocked"); Enforcer.apply(this@MainActivity); build() }
                 }
             })
             col.addView(Button(this).apply {
@@ -159,7 +170,7 @@ class MainActivity : Activity() {
                         .setView(et)
                         .setPositiveButton("Unblock") { _, _ ->
                             if (Prefs.checkPin(this@MainActivity, et.text.toString())) {
-                                Prefs.unblockManual(this@MainActivity); toast("Unblocked"); build()
+                                Prefs.unblockManual(this@MainActivity); Enforcer.apply(this@MainActivity); toast("Unblocked"); build()
                             } else toast("Wrong PIN")
                         }
                         .setNegativeButton("Cancel", null).show()
@@ -167,22 +178,17 @@ class MainActivity : Activity() {
             })
         }
 
-        // ---- Daily schedule (every app has its own days) ----
-        val active = Prefs.schedActive(this)
-        if (active) {
+        // ---- Daily schedule (every app keeps its OWN time window and days) ----
+        if (Prefs.schedActive(this)) {
             val pm0 = packageManager
             val lines = Prefs.protectedApps(this).joinToString("\n") { p ->
                 val n = try { pm0.getApplicationLabel(pm0.getApplicationInfo(p, 0)).toString() } catch (e: Exception) { p }
-                "- $n: ${Prefs.daysLeft(this, p)} day(s) left"
+                "- $n: ${fmt(Prefs.pStart(this, p))} - ${fmt(Prefs.pEnd(this, p))}, ${Prefs.daysLeft(this, p)} day(s) left"
             }
             col.addView(TextView(this).apply {
-                text = "\nDaily block ACTIVE: ${fmt(Prefs.schedStart(this@MainActivity))} - ${fmt(Prefs.schedEnd(this@MainActivity))} (${Prefs.schedTz(this@MainActivity)})\n$lines\n\n" +
-                    "Each app keeps its own days. Uninstall stays blocked for an app until its own days finish."
+                text = "\nProtected apps:\n$lines\n\nEach app keeps its own time and days. Uninstall stays blocked for an app until its own days finish."
                 textSize = 16f
             })
-            val clock0 = TextView(this)
-            col.addView(clock0)
-            startClock(clock0) { Prefs.schedTz(this@MainActivity) }
             val add = EditText(this).apply { hint = "Add days to ALL protected apps"; inputType = InputType.TYPE_CLASS_NUMBER }
             col.addView(add)
             col.addView(Button(this).apply {
@@ -192,54 +198,54 @@ class MainActivity : Activity() {
                     if (d <= 0) toast("Enter days") else { Prefs.addDays(this@MainActivity, d); toast("Added"); build() }
                 }
             })
-        } else {
-            col.addView(TextView(this).apply { text = "\nDaily block schedule (apps closed every day in this time window)"; textSize = 16f })
-            col.addView(TextView(this).apply { text = "Country / time zone:" })
-            val spin = Spinner(this)
-            spin.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, zones.map { it.first })
-            spin.setSelection(tzIndex)
-            spin.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-                override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) { tzIndex = pos }
-                override fun onNothingSelected(p: AdapterView<*>?) {}
-            }
-            col.addView(spin)
-            val clock = TextView(this)
-            col.addView(clock)
-            startClock(clock) { zones[tzIndex].second }
-
-            val b1 = Button(this); val b2 = Button(this)
-            fun refresh() { b1.text = "Block from: ${fmt(startMin)}"; b2.text = "Block until: ${fmt(endMin)}" }
-            refresh()
-            b1.setOnClickListener {
-                TimePickerDialog(this, { _, h, m -> startMin = h * 60 + m; refresh() }, startMin / 60, startMin % 60, true).show()
-            }
-            b2.setOnClickListener {
-                TimePickerDialog(this, { _, h, m -> endMin = h * 60 + m; refresh() }, endMin / 60, endMin % 60, true).show()
-            }
-            col.addView(b1); col.addView(b2)
         }
 
-        col.addView(TextView(this).apply {
-            text = "\nTick apps below, enter days, then press the button. Only apps not already protected get a NEW period; protected apps keep their own days."
-            textSize = 14f
-        })
-        val days = EditText(this).apply { hint = "Days for the newly ticked apps (e.g. 21)"; inputType = InputType.TYPE_CLASS_NUMBER }
+        col.addView(TextView(this).apply { text = "\nNEW block for the apps you tick below"; textSize = 16f })
+        col.addView(TextView(this).apply { text = "Country / time zone:" })
+        val spin = Spinner(this)
+        spin.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, zones.map { it.first })
+        spin.setSelection(tzIndex)
+        spin.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) { tzIndex = pos }
+            override fun onNothingSelected(p: AdapterView<*>?) {}
+        }
+        col.addView(spin)
+        val clock = TextView(this)
+        col.addView(clock)
+        startClock(clock) { zones[tzIndex].second }
+
+        val allDay = CheckBox(this).apply { text = "Block all day (24 hours), no time window" }
+        col.addView(allDay)
+        val b1 = Button(this); val b2 = Button(this)
+        fun refresh() { b1.text = "Block from: ${fmt(startMin)}"; b2.text = "Block until: ${fmt(endMin)}" }
+        refresh()
+        b1.setOnClickListener {
+            TimePickerDialog(this, { _, h, m -> startMin = h * 60 + m; refresh() }, startMin / 60, startMin % 60, true).show()
+        }
+        b2.setOnClickListener {
+            TimePickerDialog(this, { _, h, m -> endMin = h * 60 + m; refresh() }, endMin / 60, endMin % 60, true).show()
+        }
+        col.addView(b1); col.addView(b2)
+        val days = EditText(this).apply { hint = "For how many days (e.g. 21)"; inputType = InputType.TYPE_CLASS_NUMBER }
         col.addView(days)
         col.addView(Button(this).apply {
             text = "Start block for newly ticked apps"
             setOnClickListener {
                 val d = days.text.toString().toIntOrNull() ?: 0
+                val s = if (allDay.isChecked) 0 else startMin
+                val e = if (allDay.isChecked) 1440 else endMin
                 val fresh = Prefs.lockedApps(this@MainActivity).filter { !Prefs.isProtected(this@MainActivity, it) }
                 when {
                     d <= 0 -> toast("Enter number of days")
-                    !active && startMin == endMin -> toast("Start and end time cannot be the same")
+                    s == e -> toast("Start and end time cannot be the same")
                     fresh.isEmpty() -> toast("Tick a new app first")
                     !accessOn() -> toast("Turn on Accessibility first")
                     else -> AlertDialog.Builder(this@MainActivity)
                         .setTitle("Protect ${fresh.size} app(s) for $d day(s)?")
-                        .setMessage("Cannot be cancelled. These apps cannot be untick-ed or uninstalled for $d days from now. Other apps keep their own days.")
+                        .setMessage((if (allDay.isChecked) "Blocked all day. " else "Blocked ${fmt(s)} - ${fmt(e)} every day. ") +
+                            "Cannot be cancelled. These apps cannot be untick-ed or uninstalled for $d days from now. Other apps keep their own time and days.")
                         .setPositiveButton("Start") { _, _ ->
-                            Prefs.startSchedule(this@MainActivity, startMin, endMin, d, zones[tzIndex].second)
+                            Prefs.startSchedule(this@MainActivity, s, e, d, zones[tzIndex].second)
                             show()
                         }
                         .setNegativeButton("Cancel", null).show()
@@ -293,6 +299,16 @@ class MainActivity : Activity() {
             }
         })
 
+        if (Enforcer.isOwner(this)) {
+            col.addView(Button(this).apply {
+                text = "Remove device-owner mode (only when nothing is blocked)"
+                setOnClickListener {
+                    if (Prefs.uninstallProtected(this@MainActivity)) toast("Not possible while a block or protection is active")
+                    else { Enforcer.releaseAll(this@MainActivity); toast("Device-owner mode removed"); build() }
+                }
+            })
+        }
+
         // Permissions
         col.addView(Button(this).apply {
             text = "1. Enable Accessibility service"
@@ -325,7 +341,13 @@ class MainActivity : Activity() {
         val locked = Prefs.lockedApps(this)
         for (a in apps) {
             list.addView(CheckBox(this).apply {
-                text = pm.getApplicationLabel(a).toString() + if (Prefs.manualBlocked(this@MainActivity, a.packageName)) "  [BLOCKED]" else ""
+                text = pm.getApplicationLabel(a).toString() + when {
+                    Prefs.manualBlocked(this@MainActivity, a.packageName) -> "  [BLOCKED]"
+                    Prefs.isProtected(this@MainActivity, a.packageName) -> "  [${Prefs.daysLeft(this@MainActivity, a.packageName)} day(s) left]"
+                    Prefs.isTimerBlocked(this@MainActivity, a.packageName) -> "  [timer running]"
+                    a.packageName in locked -> "  [ticked, NOT blocking yet - press Start]"
+                    else -> ""
+                }
                 isChecked = a.packageName in locked
                 setCompoundDrawablesWithIntrinsicBounds(pm.getApplicationIcon(a), null, null, null)
                 compoundDrawablePadding = 24
